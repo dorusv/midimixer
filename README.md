@@ -55,3 +55,10 @@ midimixer/
 If you want to add this as a proper package later, the dependencies to declare are:
 `python3Packages.pyside6`, `python3Packages.mido`, `python3Packages.python-rtmidi`,
 `python3Packages.pulsectl`, `alsa-lib`, `pulseaudio`.
+
+
+Restart service:
+`systemctl --user restart midimixer`
+
+List PipeWire sinks:
+`pw-dump | grep -A2 "application.name"`
