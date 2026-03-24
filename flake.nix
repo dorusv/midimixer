@@ -51,8 +51,10 @@
     };
 
   in {
-    packages.${system}.default = midimixer;
-    packages.${system}.midimixer = midimixer;
+    packages.${system} = {
+      default   = midimixer;
+      midimixer = midimixer;
+    };
 
     # Keep the dev shell working
     devShells.${system}.default = import ./shell.nix { inherit pkgs; };
