@@ -184,7 +184,7 @@ class FaderStrip(QWidget):
         self.bind_btn = QPushButton(cc_text)
         self.bind_btn.setObjectName("bind_btn")
         self.bind_btn.setFixedHeight(18)
-        self.bind_btn.clicked.connect(on_bind_request)
+        self.bind_btn.clicked.connect(lambda checked=False: on_bind_request())
         if cc_hint is not None:
             self.bind_btn.setProperty("active", "true")
         layout.addWidget(self.bind_btn, alignment=Qt.AlignHCenter)
@@ -205,7 +205,15 @@ class FaderStrip(QWidget):
         self.name_label.setObjectName("app_name")
         self.name_label.setAlignment(Qt.AlignCenter)
         self.name_label.setToolTip(label)
+        self.name_label.setWordWrap(False)
         layout.addWidget(self.name_label)
+
+    def set_labels(self, names: list[str]) -> None:
+        """Update strip to show multiple stacked app names."""
+        short = "\n".join(n[:8] for n in names)
+        full  = "\n".join(names)
+        self.name_label.setText(short)
+        self.name_label.setToolTip(full)
 
     def set_volume(self, volume: float) -> None:
         self._suppress_signal = True
@@ -253,7 +261,7 @@ class ActionButton(QWidget):
         self.btn.setProperty("state", "off")
         self.btn.setProperty("note_bound", "true" if note_hint is not None else "false")
         self.btn.setToolTip(label)
-        self.btn.clicked.connect(on_press)
+        self.btn.clicked.connect(lambda checked=False: on_press())
         layout.addWidget(self.btn)
 
         # Small note-bind indicator below
@@ -262,7 +270,7 @@ class ActionButton(QWidget):
         self.note_btn.setObjectName("bind_btn")
         self.note_btn.setFixedHeight(14)
         self.note_btn.setProperty("active", "true" if note_hint is not None else "false")
-        self.note_btn.clicked.connect(on_bind_request)
+        self.note_btn.clicked.connect(lambda checked=False: on_bind_request())
         layout.addWidget(self.note_btn, alignment=Qt.AlignHCenter)
 
     def set_state(self, on: bool) -> None:
@@ -418,7 +426,7 @@ class MixerWindow(QMainWindow):
         for si in sink_inputs:
             key = str(si.index)
             if key not in self._strips:
-                cc = self._cc_for_target(si.name)
+                cc = self.config.cc_for_target(si.name)
                 strip = FaderStrip(
                     label=si.name,
                     on_volume_change=lambda vol, idx=si.index, n=si.name: self._sink_volume_changed(idx, vol, n),
@@ -435,14 +443,34 @@ class MixerWindow(QMainWindow):
                     self.audio.set_enforced_volume(si.name, recalled)
                     self.audio.set_sink_input_volume(si.index, recalled)
                     strip.set_volume(recalled)
-                    # Refresh mute buttons now that this app is active
                     self._rebuild_action_buttons()
                     continue
 
             self._strips[key].set_volume(si.volume)
 
+        # Update stacked labels for any strips that share a CC
+        self._update_strip_labels()
+
         if "master" in self._strips:
             self._strips["master"].set_volume(self.audio.get_master_volume())
+
+    def _update_strip_labels(self) -> None:
+        """Update fader strip labels to show all co-bound app names stacked."""
+        # Build cc → list of active app names
+        cc_names: dict[int, list[str]] = {}
+        for name, idx in self._sink_map.items():
+            cc = self.config.cc_for_target(name)
+            if cc is not None:
+                cc_names.setdefault(cc, []).append(name)
+
+        # Apply stacked labels to strips that share a CC
+        for key, strip in self._strips.items():
+            if key == "master":
+                continue
+            name = strip.name_label.toolTip().split("\n")[0]  # primary name
+            cc = self.config.cc_for_target(name)
+            if cc is not None and cc in cc_names and len(cc_names[cc]) > 1:
+                strip.set_labels(cc_names[cc])
 
     # ------------------------------------------------------------------
     # Action buttons (mute + functions)
@@ -553,9 +581,24 @@ class MixerWindow(QMainWindow):
 
     def _sink_volume_changed(self, index: int, vol: float, name: str = "") -> None:
         self.audio.set_sink_input_volume(index, vol)
-        if name:
-            self.config.remember_volume(name, vol)
-            self.audio.set_enforced_volume(name, vol)
+        if not name:
+            return
+        self.config.remember_volume(name, vol)
+        self.audio.set_enforced_volume(name, vol)
+        # Apply to all other apps on the same CC
+        cc = self.config.cc_for_target(name)
+        if cc is not None:
+            for other in self.config.targets_for_cc(cc):
+                if other == name or other == MASTER:
+                    continue
+                self.config.remember_volume(other, vol)
+                self.audio.set_enforced_volume(other, vol)
+                idx = self._sink_map.get(other)
+                if idx is not None:
+                    self.audio.set_sink_input_volume(idx, vol)
+                    other_key = str(idx)
+                    if other_key in self._strips:
+                        self._strips[other_key].set_volume(vol)
 
     # ------------------------------------------------------------------
     # CC learn (faders/knobs)
@@ -568,15 +611,20 @@ class MixerWindow(QMainWindow):
         self._status.setText(f"⏳ move a knob/fader → {label}")
 
     def _on_cc(self, cc: int, value: int) -> None:
-        # Fader learn mode — grab next CC regardless of value
-        if self._binding_target is not None:
+        # Fader learn mode — only grab CC with a meaningful value (not a button release)
+        if self._binding_target is not None and isinstance(self._binding_target, str) and value > 0:
             target = self._binding_target
             self._binding_target = None
-            self.config.unbind(cc)
+            # Append to existing targets on this CC (don't replace)
             self.config.bind(cc, target)
             self._update_bind_buttons()
+            self._update_strip_labels()
+            existing = self.config.targets_for_cc(cc)
             label = "MASTER" if target == MASTER else target
-            self._status.setText(f"✓ CC{cc} → {label}")
+            if len(existing) > 1:
+                self._status.setText(f"✓ CC{cc} → {', '.join(existing)}")
+            else:
+                self._status.setText(f"✓ CC{cc} → {label}")
             return
 
         # Button learn mode — only trigger on press (value=127)
@@ -604,25 +652,26 @@ class MixerWindow(QMainWindow):
                 return
 
         # Fader dispatch
-        target = self.config.target_for_cc(cc)
-        if target is None:
+        targets = self.config.targets_for_cc(cc)
+        if not targets:
             return
         vol = value / 127.0
 
-        if target == MASTER:
-            self.audio.set_master_volume(vol)
-            self.config.remember_volume(MASTER, vol)
-            if "master" in self._strips:
-                self._strips["master"].set_volume(vol)
-        else:
-            idx = self._sink_map.get(target)
-            if idx is not None:
-                self.audio.set_sink_input_volume(idx, vol)
-                self.config.remember_volume(target, vol)
-                self.audio.set_enforced_volume(target, vol)
-                key = str(idx)
-                if key in self._strips:
-                    self._strips[key].set_volume(vol)
+        for target in targets:
+            if target == MASTER:
+                self.audio.set_master_volume(vol)
+                self.config.remember_volume(MASTER, vol)
+                if "master" in self._strips:
+                    self._strips["master"].set_volume(vol)
+            else:
+                idx = self._sink_map.get(target)
+                if idx is not None:
+                    self.audio.set_sink_input_volume(idx, vol)
+                    self.config.remember_volume(target, vol)
+                    self.audio.set_enforced_volume(target, vol)
+                    key = str(idx)
+                    if key in self._strips:
+                        self._strips[key].set_volume(vol)
 
     # ------------------------------------------------------------------
     # Note learn (buttons) and dispatch
@@ -666,15 +715,13 @@ class MixerWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _update_bind_buttons(self) -> None:
-        bindings = self.config.all_bindings()
-        reverse = {v: k for k, v in bindings.items()}
         if "master" in self._strips:
-            self._strips["master"].set_cc(reverse.get(MASTER))
+            self._strips["master"].set_cc(self.config.cc_for_target(MASTER))
         for key, strip in self._strips.items():
             if key == "master":
                 continue
-            name = strip.name_label.toolTip()
-            strip.set_cc(reverse.get(name))
+            name = strip.name_label.toolTip().split("\n")[0]
+            self._strips[key].set_cc(self.config.cc_for_target(name))
 
     def _update_action_btn_notes(self) -> None:
         for key, btn in self._action_btns.items():
@@ -683,10 +730,7 @@ class MixerWindow(QMainWindow):
             btn.set_note(note)
 
     def _cc_for_target(self, target: str) -> Optional[int]:
-        for cc, t in self.config.all_bindings().items():
-            if t == target:
-                return cc
-        return None
+        return self.config.cc_for_target(target)
 
     # ------------------------------------------------------------------
     # MIDI bridge (called from non-GUI thread)

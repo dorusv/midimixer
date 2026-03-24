@@ -1,5 +1,10 @@
 # midimixer
 
+
+Just to preface, this whole project (including the rest of this readme) is created by an LLM so I could just get it working quickly for my personal use.
+
+
+
 A MIDI Mixer clone for Linux. Maps MIDI CC knobs/faders to per-application
 PulseAudio/PipeWire volume controls.
 

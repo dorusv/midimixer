@@ -5,8 +5,8 @@ Config format:
 {
   "midi_port": "nanoKONTROL2",
   "mappings": {
-    "0": ["__master__"],
-    "1": ["Spotify", "Firefox"]
+    "0": "__master__",
+    "1": "Spotify"
   },
   "button_mappings": {
     "53": {"type": "mute",     "target": "Spotify"},
@@ -21,14 +21,13 @@ Config format:
   }
 }
 
-Note: mappings values are lists of target names. Single strings in old configs
-are auto-upgraded to single-element lists on load.
-Button_mappings keys are CC numbers (nanoKONTROL2 uses control_change for buttons).
+Note: button_mappings keys are CC numbers (same protocol as fader mappings).
+The nanoKONTROL2 and most Korg controllers use control_change for buttons.
 """
 
 import json
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Optional
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "midimixer" / "config.json"
@@ -39,6 +38,7 @@ MASTER = "__master__"
 @dataclass
 class ButtonBinding:
     type: Literal["mute", "function"]
+    # for mute: the app name or MASTER; for function: the function name
     target: str
 
 
@@ -46,49 +46,28 @@ class MappingConfig:
     def __init__(self, path: Path = DEFAULT_CONFIG_PATH):
         self.path = path
         self.midi_port: Optional[str] = None
-        self.mappings: dict[int, list[str]] = {}         # cc → list of targets
-        self.button_mappings: dict[int, ButtonBinding] = {}
-        self.volumes: dict[str, float] = {}
-        self.functions: dict[str, bool] = {}
+        self.mappings: dict[int, str] = {}              # cc → target
+        self.button_mappings: dict[int, ButtonBinding] = {}  # note → ButtonBinding
+        self.volumes: dict[str, float] = {}             # target → volume
+        self.functions: dict[str, bool] = {}            # function name → on/off state
         self._load()
 
     # ------------------------------------------------------------------
     # CC fader bindings
     # ------------------------------------------------------------------
 
-    def targets_for_cc(self, cc: int) -> list[str]:
-        """Return all targets bound to a CC, empty list if unbound."""
-        return self.mappings.get(cc, [])
-
-    def cc_for_target(self, target: str) -> Optional[int]:
-        """Reverse lookup: find the CC bound to a target (first match)."""
-        for cc, targets in self.mappings.items():
-            if target in targets:
-                return cc
-        return None
+    def target_for_cc(self, cc: int) -> Optional[str]:
+        return self.mappings.get(cc)
 
     def bind(self, cc: int, target: str) -> None:
-        """Add target to cc's list. Creates the list if it doesn't exist."""
-        if cc not in self.mappings:
-            self.mappings[cc] = []
-        if target not in self.mappings[cc]:
-            self.mappings[cc].append(target)
+        self.mappings[cc] = target
         self._save()
 
     def unbind(self, cc: int) -> None:
-        """Remove entire cc binding."""
         self.mappings.pop(cc, None)
         self._save()
 
-    def unbind_target(self, cc: int, target: str) -> None:
-        """Remove a single target from a cc's list."""
-        if cc in self.mappings:
-            self.mappings[cc] = [t for t in self.mappings[cc] if t != target]
-            if not self.mappings[cc]:
-                del self.mappings[cc]
-        self._save()
-
-    def all_bindings(self) -> dict[int, list[str]]:
+    def all_bindings(self) -> dict[int, str]:
         return dict(self.mappings)
 
     # ------------------------------------------------------------------
@@ -110,13 +89,14 @@ class MappingConfig:
         return dict(self.button_mappings)
 
     def note_for_binding(self, btype: str, target: str) -> Optional[int]:
+        """Reverse lookup: find the note bound to a specific action."""
         for note, b in self.button_mappings.items():
             if b.type == btype and b.target == target:
                 return note
         return None
 
     # ------------------------------------------------------------------
-    # Functions
+    # Functions (named on/off toggles)
     # ------------------------------------------------------------------
 
     def get_function(self, name: str) -> bool:
@@ -157,13 +137,8 @@ class MappingConfig:
             data = json.loads(self.path.read_text())
             self.midi_port = data.get("midi_port")
             raw = data.get("mappings", {})
-            # Backwards compat: single string → list
-            self.mappings = {
-                int(k): ([v] if isinstance(v, str) else v)
-                for k, v in raw.items()
-                if isinstance(v, (str, list))   # skip booleans from old bad saves
-            }
-            self.volumes   = data.get("volumes", {})
+            self.mappings = {int(k): v for k, v in raw.items()}
+            self.volumes = data.get("volumes", {})
             self.functions = data.get("functions", {})
             raw_buttons = data.get("button_mappings", {})
             self.button_mappings = {
