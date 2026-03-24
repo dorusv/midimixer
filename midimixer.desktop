@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=midimixer
+Comment=Per-app MIDI volume control
+Exec=midimixer
+Icon=audio-x-generic
+Type=Application
+Categories=AudioVideo;Audio;
+StartupNotify=false
