@@ -3,9 +3,15 @@ gui.py — PySide6 mixer GUI with vertical fader strips and button rows.
 
 Aesthetic: dark industrial — think hardware rack unit meets terminal.
 Monospace labels, amber accents, tight layout.
+
+Theming: if ~/.config/stylix/palette.json exists (base16 format), its colors
+are used automatically; otherwise falls back to a built-in dark amber palette.
 """
 
 from __future__ import annotations
+import json
+import os
+from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import (
@@ -23,126 +29,235 @@ from mapping import MappingConfig, ButtonBinding, MASTER
 # Stylesheet
 # ---------------------------------------------------------------------------
 
-STYLESHEET = """
-QMainWindow, QWidget#root {
-    background: #111111;
+_DEFAULT_PALETTE = {
+    "base00": "111111",  # main background
+    "base01": "1a1a1a",  # strip background
+    "base02": "2a2a2a",  # borders / groove
+    "base03": "444444",  # disabled / dim text
+    "base04": "666666",  # vol label
+    "base05": "d5c4a1",  # foreground (unused in dark theme)
+    "base09": "c8860a",  # accent (orange/amber)
+    "base0A": "e09a10",  # accent hover (lighter)
 }
 
-QWidget#strip {
-    background: #1a1a1a;
-    border: 1px solid #2a2a2a;
+
+def _load_stylix_palette() -> dict[str, str]:
+    """Return base16 hex colors from Stylix if available, else the built-in defaults."""
+    path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "stylix" / "palette.json"
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        # Validate it looks like a base16 palette
+        if all(k in data for k in ("base00", "base01", "base09")):
+            return data
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+    return _DEFAULT_PALETTE
+
+
+def _rgba(hex6: str, alpha: int) -> str:
+    """Convert a 6-char hex color to an rgba() string. alpha is 0-255."""
+    r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _build_stylesheet(p: dict[str, str]) -> str:
+    """Build the Qt stylesheet from a base16 palette (hex values without '#')."""
+    bg      = _rgba(p['base00'], 210)  # main background, ~82% opaque
+    strip   = _rgba(p['base01'], 195)  # strip background, ~76% opaque
+    border  = f"#{p['base02']}"        # subtle borders (opaque)
+    dim     = f"#{p['base03']}"        # disabled text
+    muted   = f"#{p['base04']}"        # vol label
+    accent  = f"#{p['base09']}"        # primary accent (orange)
+    # Lighten accent slightly for hover: use base0A if palette has it, else reuse accent
+    accent_hi = f"#{p.get('base0A', p['base09'])}"
+
+    return f"""
+QMainWindow, QWidget#root {{
+    background: {bg};
+}}
+
+QWidget#strip {{
+    background: {strip};
+    border: 1px solid {border};
     border-radius: 4px;
-}
+}}
 
-QWidget#strip:hover {
-    border-color: #c8860a;
-}
+QWidget#strip:hover {{
+    border-color: {accent};
+}}
 
-QLabel#app_name {
-    color: #c8860a;
+QLabel#app_name {{
+    color: {accent};
     font-family: "Iosevka", "Fira Mono", "Courier New", monospace;
     font-size: 11px;
     font-weight: bold;
     letter-spacing: 1px;
-}
+}}
 
-QLabel#vol_label {
-    color: #666666;
+QLabel#vol_label {{
+    color: {muted};
     font-family: "Iosevka", "Fira Mono", "Courier New", monospace;
     font-size: 10px;
-}
+}}
 
-QSlider::groove:vertical {
-    background: #252525;
+QSlider::groove:vertical {{
+    background: {border};
     width: 6px;
     border-radius: 3px;
-}
+}}
 
-QSlider::handle:vertical {
-    background: #c8860a;
+QSlider::handle:vertical {{
+    background: {accent};
     border: none;
     height: 18px;
     width: 28px;
     margin: 0 -11px;
     border-radius: 3px;
-}
+}}
 
-QSlider::handle:vertical:hover {
-    background: #e09a10;
-}
+QSlider::handle:vertical:hover {{
+    background: {accent_hi};
+}}
 
-QSlider::sub-page:vertical {
-    background: #c8860a44;
+QSlider::sub-page:vertical {{
+    background: {accent}44;
     border-radius: 3px;
-}
+}}
 
-QPushButton#bind_btn {
+QPushButton#bind_btn {{
     background: transparent;
-    color: #444444;
-    border: 1px solid #2a2a2a;
+    color: {dim};
+    border: 1px solid {border};
     border-radius: 3px;
     font-family: "Iosevka", "Fira Mono", monospace;
     font-size: 9px;
     padding: 2px 4px;
-}
+}}
 
-QPushButton#bind_btn:hover {
-    color: #c8860a;
-    border-color: #c8860a;
-}
+QPushButton#bind_btn:hover {{
+    color: {accent};
+    border-color: {accent};
+}}
 
-QPushButton#bind_btn[active="true"] {
-    color: #c8860a;
-    border-color: #c8860a55;
-}
+QPushButton#bind_btn[active="true"] {{
+    color: {accent};
+    border-color: {accent}55;
+}}
 
-QPushButton#action_btn {
-    background: #1a1a1a;
-    color: #444444;
-    border: 1px solid #2a2a2a;
+QPushButton#action_btn {{
+    background: {strip};
+    color: {dim};
+    border: 1px solid {border};
     border-radius: 3px;
     font-family: "Iosevka", "Fira Mono", monospace;
     font-size: 9px;
     padding: 3px 6px;
     min-width: 60px;
-}
+}}
 
-QPushButton#action_btn:hover {
-    color: #c8860a;
-    border-color: #c8860a;
-}
+QPushButton#action_btn:hover {{
+    color: {accent};
+    border-color: {accent};
+}}
 
-QPushButton#action_btn[state="on"] {
-    background: #c8860a;
-    color: #111111;
-    border-color: #c8860a;
+QPushButton#action_btn[state="on"] {{
+    background: {accent};
+    color: {bg};
+    border-color: {accent};
     font-weight: bold;
-}
+}}
 
-QPushButton#action_btn[note_bound="true"] {
-    border-color: #c8860a55;
-    color: #888888;
-}
+QPushButton#action_btn[note_bound="true"] {{
+    border-color: {accent}55;
+    color: {muted};
+}}
 
-QScrollArea {
+QScrollArea {{
     border: none;
-    background: #111111;
-}
+    background: {bg};
+}}
 
-QLabel#title {
-    color: #333333;
+QLabel#title {{
+    color: {border};
     font-family: "Iosevka", "Fira Mono", monospace;
     font-size: 10px;
     letter-spacing: 3px;
-}
+}}
 
-QLabel#section_label {
-    color: #2a2a2a;
+QLabel#section_label {{
+    color: {border};
     font-family: "Iosevka", "Fira Mono", monospace;
     font-size: 9px;
     letter-spacing: 2px;
-}
+}}
 """
+
+
+_PALETTE   = _load_stylix_palette()
+STYLESHEET = _build_stylesheet(_PALETTE)
+
+
+def _request_compositor_blur(window) -> None:
+    """
+    Set _KDE_NET_WM_BLUR_BEHIND_REGION on the window to request blur-behind
+    from the compositor.  Works on KWin (X11 and XWayland).
+
+    For native-Wayland compositors (Hyprland, sway, etc.) this does nothing —
+    add a window rule on the compositor side instead, e.g.:
+      Hyprland:  windowrulev2 = blur, class:midimixer
+      sway/i3:   no blur support in sway itself; use swayblur or similar
+    """
+    from PySide6.QtGui import QGuiApplication
+    if QGuiApplication.platformName() != "xcb":
+        return
+    try:
+        import ctypes, ctypes.util
+        lib = ctypes.util.find_library("xcb")
+        if not lib:
+            return
+        xcb  = ctypes.CDLL(lib)
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
+        conn = xcb.xcb_connect(None, None)
+        if xcb.xcb_connection_has_error(conn):
+            return
+
+        atom_name = b"_KDE_NET_WM_BLUR_BEHIND_REGION"
+        cookie = xcb.xcb_intern_atom(conn, 0, len(atom_name), atom_name)
+
+        class _InternAtomReply(ctypes.Structure):
+            _fields_ = [("response_type", ctypes.c_uint8),
+                        ("pad0",          ctypes.c_uint8),
+                        ("sequence",      ctypes.c_uint16),
+                        ("length",        ctypes.c_uint32),
+                        ("atom",          ctypes.c_uint32)]
+
+        xcb.xcb_intern_atom_reply.restype = ctypes.POINTER(_InternAtomReply)
+        reply = xcb.xcb_intern_atom_reply(conn, cookie, None)
+        if not reply:
+            xcb.xcb_disconnect(conn)
+            return
+
+        blur_atom = reply.contents.atom
+        libc.free(reply)
+
+        # Setting an empty CARDINAL array (length=0) tells KWin to blur the
+        # entire window background.
+        xcb.xcb_change_property(
+            conn,
+            ctypes.c_uint8(0),            # XCB_PROP_MODE_REPLACE
+            ctypes.c_uint32(int(window.winId())),
+            ctypes.c_uint32(blur_atom),
+            ctypes.c_uint32(6),           # XCB_ATOM_CARDINAL
+            ctypes.c_uint8(32),           # 32-bit format
+            ctypes.c_uint32(0),           # 0 items = whole window
+            None,
+        )
+        xcb.xcb_flush(conn)
+        xcb.xcb_disconnect(conn)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +426,9 @@ class MixerWindow(QMainWindow):
 
         self.setWindowTitle("midimixer")
         self.setMinimumHeight(420)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet(STYLESHEET)
+        self._blur_requested = False
 
         root = QWidget()
         root.setObjectName("root")
@@ -341,7 +458,7 @@ class MixerWindow(QMainWindow):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #1e1e1e;")
+        sep.setStyleSheet(f"color: #{_PALETTE['base01']};")
         root_layout.addWidget(sep)
 
         # Button rows (mute + functions)
@@ -407,7 +524,7 @@ class MixerWindow(QMainWindow):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet("color: #2a2a2a;")
+        sep.setStyleSheet(f"color: #{_PALETTE['base02']};")
         self._strips_layout.insertWidget(1, sep)
 
     def _refresh_strips(self) -> None:
@@ -744,6 +861,12 @@ class MixerWindow(QMainWindow):
 
     def emit_sink_event(self, facility: str, index: int) -> None:
         self.signals.sink_input_changed.emit()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._blur_requested:
+            self._blur_requested = True
+            _request_compositor_blur(self)
 
     def closeEvent(self, event):
         # Hide to tray instead of closing

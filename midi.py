@@ -55,6 +55,21 @@ class MidiListener:
         except Exception as e:
             print(f"[midi] LED send error: {e}")
 
+    # Substrings to look for when auto-detecting a controller (case-insensitive)
+    AUTO_DETECT = ["nanokontrol", "nanoKONTROL", "korg"]
+
+    def _detect_port(self, ports: list[str]) -> str:
+        """Pick the best port: configured name > nanoKONTROL > first available."""
+        if self._port_name and self._port_name in ports:
+            return self._port_name
+        # Try to find a nanoKONTROL or other Korg device
+        for keyword in self.AUTO_DETECT:
+            match = next((p for p in ports if keyword.lower() in p.lower()), None)
+            if match:
+                return match
+        # Fall back to first available
+        return ports[0]
+
     def start(self) -> None:
         ports_in  = mido.get_input_names()
         ports_out = mido.get_output_names()
@@ -63,7 +78,7 @@ class MidiListener:
             print("[midi] No MIDI input ports found.")
             return
 
-        name = self._port_name if self._port_name in ports_in else ports_in[0]
+        name = self._detect_port(ports_in)
         print(f"[midi] Opening input:  {name}")
         self._in_port = mido.open_input(name)
 
